@@ -1,126 +1,72 @@
-import streamlit as st
 import requests
 import pandas as pd
-import matplotlib.pyplot as plt
+import streamlit as st
+import plotly.express as px
 
 # ==============================
-# تنظیمات اولیه صفحه
+# Binance API - Get OHLCV Data
 # ==============================
-st.set_page_config(
-    page_title="Crypto Liquidity Dashboard",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-st.title("📊 داشبورد ورود و خروج نقدینگی بازار ارز دیجیتال")
-
-# ==============================
-# تنظیمات رفرش خودکار
-# ==============================
-refresh_ms = st.sidebar.number_input(
-    "⏱️ فاصله‌ی رفرش (میلی‌ثانیه)",
-    min_value=5000,
-    max_value=60000,
-    step=5000,
-    value=15000
-)
-
-auto_refresh = st.sidebar.checkbox("فعال‌سازی رفرش خودکار", value=True)
-
-if auto_refresh:
-    refresh_code = f"""
-        <script>
-        function autoRefresh() {{
-            window.location.reload();
-        }}
-        setInterval(autoRefresh, {refresh_ms});
-        </script>
-    """
-    st.markdown(refresh_code, unsafe_allow_html=True)
+def get_binance_ohlcv(symbol="BTCUSDT", interval="1h", limit=200):
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    data = requests.get(url, params=params).json()
+    df = pd.DataFrame(data, columns=[
+        "time_open","open","high","low","close","volume",
+        "time_close","qav","num_trades","taker_base_vol","taker_quote_vol","ignore"
+    ])
+    df["time_open"] = pd.to_datetime(df["time_open"], unit="ms")
+    df["volume"] = df["volume"].astype(float)
+    df["close"] = df["close"].astype(float)
+    return df[["time_open", "close", "volume"]]
 
 # ==============================
-# توابع کمکی برای گرفتن داده
+# Streamlit App
 # ==============================
-def get_data_from_coingecko():
-    url = "https://api.coingecko.com/api/v3/global"
-    try:
-        data = requests.get(url).json()
-        return data["data"]
-    except Exception as e:
-        st.error("❌ خطا در گرفتن داده از CoinGecko")
-        return None
+st.set_page_config(page_title="📊 Crypto Liquidity Dashboard", layout="wide")
 
-def get_binance_volume(symbol="BTCUSDT"):
-    url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
-    try:
-        return float(requests.get(url).json()["quoteVolume"])
-    except:
-        return None
+st.title("📊 داشبورد ورود و خروج نقدینگی")
+st.markdown("این داشبورد حجم معاملات و جهت نقدینگی رو در تایم‌فریم‌های مختلف نشون میده.")
 
-# ==============================
-# گرفتن داده‌ها
-# ==============================
-cg_data = get_data_from_coingecko()
+# انتخاب تایم‌فریم
+interval = st.sidebar.selectbox("⏳ تایم‌فریم", ["1h", "4h", "1d"])
+limit = st.sidebar.slider("📅 تعداد کندل‌ها", 50, 500, 200)
 
-if cg_data:
-    total_mcap = cg_data["total_market_cap"]["usd"]
-    btc_dominance = cg_data["market_cap_percentage"]["btc"]
-    eth_dominance = cg_data["market_cap_percentage"]["eth"]
-    stable_dominance = sum([cg_data["market_cap_percentage"].get(s, 0)
-                            for s in ["usdt", "usdc", "busd", "dai"]])
+# کوین‌ها
+coins = {
+    "BTC": "BTCUSDT",
+    "ETH": "ETHUSDT",
+    "USDT": "BUSDUSDT",   # استیبل کوین
+    "BNB (Altcoin)": "BNBUSDT"  # شاخص نمونه برای آلت‌کوین
+}
 
-    # محاسبه مارکت کپ‌های جدا
-    btc_mcap = total_mcap * (btc_dominance / 100)
-    eth_mcap = total_mcap * (eth_dominance / 100)
-    stable_mcap = total_mcap * (stable_dominance / 100)
-    alt_mcap = total_mcap - (btc_mcap + eth_mcap + stable_mcap)
+# نمایش دیتا برای هر کوین
+for name, symbol in coins.items():
+    st.subheader(f"{name} ({symbol}) - تایم‌فریم {interval}")
+    df = get_binance_ohlcv(symbol, interval, limit)
 
-    # گرفتن حجم معاملات بایننس
-    btc_vol = get_binance_volume("BTCUSDT")
-    eth_vol = get_binance_volume("ETHUSDT")
-    usdt_vol = get_binance_volume("USDTUSDT")  # معمولاً صفره ولی برای مثال
+    col1, col2 = st.columns([2, 1])
 
-    # ==============================
-    # نمایش شاخص‌های کلیدی
-    # ==============================
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("🔵 مارکت‌کپ بیت‌کوین", f"${btc_mcap:,.0f}")
-    col2.metric("🟣 مارکت‌کپ اتریوم", f"${eth_mcap:,.0f}")
-    col3.metric("🟢 مارکت‌کپ استیبل‌کوین‌ها", f"${stable_mcap:,.0f}")
-    col4.metric("🟡 مارکت‌کپ آلت‌کوین‌ها", f"${alt_mcap:,.0f}")
+    with col1:
+        fig_vol = px.bar(df, x="time_open", y="volume",
+                         title=f"حجم معاملات {name}",
+                         labels={"time_open": "زمان", "volume": "حجم"})
+        st.plotly_chart(fig_vol, use_container_width=True)
 
-    # ==============================
-    # نمودار سهم بازار
-    # ==============================
-    st.subheader("📈 دامیننس بازار")
-    fig, ax = plt.subplots()
-    labels = ["BTC", "ETH", "Stables", "Altcoins"]
-    values = [btc_dominance, eth_dominance, stable_dominance,
-              100 - (btc_dominance + eth_dominance + stable_dominance)]
-    ax.pie(values, labels=labels, autopct='%1.1f%%',
-           startangle=90, colors=["gold", "purple", "green", "blue"])
-    st.pyplot(fig)
+    with col2:
+        fig_price = px.line(df, x="time_open", y="close",
+                            title=f"قیمت {name}",
+                            labels={"time_open": "زمان", "close": "قیمت"})
+        st.plotly_chart(fig_price, use_container_width=True)
 
-    # ==============================
-    # نتیجه نهایی
-    # ==============================
-    st.subheader("📊 نتیجه بازار")
-    direction = ""
-    if btc_dominance > eth_dominance and btc_dominance > stable_dominance:
-        direction = "🚀 ورود نقدینگی به بیت‌کوین"
-        color = "green"
-    elif eth_dominance > btc_dominance and eth_dominance > stable_dominance:
-        direction = "🔥 ورود نقدینگی به اتریوم"
-        color = "orange"
-    elif stable_dominance > 20:  # یعنی پول رفته تو استیبل‌ها
-        direction = "⚠️ خروج نقدینگی به سمت استیبل‌کوین‌ها"
-        color = "red"
+    # نتیجه جهت نقدینگی
+    avg_volume = df["volume"].mean()
+    last_volume = df["volume"].iloc[-1]
+    if last_volume > avg_volume * 1.2:
+        st.success(f"✅ نقدینگی قوی در حال ورود به {name} است.")
+    elif last_volume < avg_volume * 0.8:
+        st.error(f"⚠️ احتمال خروج نقدینگی از {name}.")
     else:
-        direction = "🔄 توزیع نقدینگی بیشتر روی آلت‌کوین‌هاست"
-        color = "blue"
+        st.info(f"ℹ️ وضعیت نقدینگی {name} نرمال است.")
 
-    st.markdown(f"<h2 style='color:{color}'>{direction}</h2>",
-                unsafe_allow_html=True)
-
-else:
-    st.error("❌ داده‌ها بارگذاری نشد. دوباره امتحان کنید.")
+st.markdown("---")
+st.caption("منبع داده: Binance API (Real-time)")
