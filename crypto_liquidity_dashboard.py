@@ -5,31 +5,42 @@ import plotly.graph_objects as go
 from ta.volume import OnBalanceVolumeIndicator, money_flow_index
 
 # ==============================
-# Binance API - Get OHLCV Data
+# CryptoCompare API - Get OHLCV Data
 # ==============================
 @st.cache_data(ttl=60)
-def get_binance_ohlcv(symbol="BTCUSDT", interval="1h", limit=200):
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+def get_cryptocompare_ohlcv(symbol="BTC", vs_currency="USDT", interval="hour", limit=200):
+    if interval == "1h":
+        url = "https://min-api.cryptocompare.com/data/v2/histohour"
+    elif interval == "4h":
+        url = "https://min-api.cryptocompare.com/data/v2/histohour"
+        limit = limit * 4
+    elif interval == "1d":
+        url = "https://min-api.cryptocompare.com/data/v2/histoday"
+    else:
+        st.error("تایم‌فریم نامعتبر")
+        return pd.DataFrame()
+
+    params = {"fsym": symbol, "tsym": vs_currency, "limit": limit}
 
     try:
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
     except requests.exceptions.RequestException as e:
-        st.error(f"خطا در ارتباط با API بایننس: {e}")
+        st.error(f"خطا در ارتباط با API CryptoCompare: {e}")
         return pd.DataFrame()
 
-    if not data:
+    if not data or 'Data' not in data or 'Data' not in data['Data'] or not data['Data']['Data']:
         st.warning(f"هیچ داده‌ای برای نماد {symbol} و تایم‌فریم {interval} دریافت نشد. لطفا نماد یا تایم‌فریم را بررسی کنید.")
         return pd.DataFrame()
 
-    df = pd.DataFrame(data, columns=[
-        "time_open","open","high","low","close","volume",
-        "time_close","qav","num_trades","taker_base_vol","taker_quote_vol","ignore"
-    ])
+    df = pd.DataFrame(data['Data']['Data'])
     
-    df["time_open"] = pd.to_datetime(df["time_open"], unit="ms")
+    # Rename and clean up columns to match previous code logic
+    df = df[['time', 'open', 'high', 'low', 'close', 'volumefrom']]
+    df.rename(columns={'time': 'time_open', 'volumefrom': 'volume'}, inplace=True)
+    
+    df["time_open"] = pd.to_datetime(df["time_open"], unit="s")
     
     numeric_cols = ["open", "high", "low", "close", "volume"]
     for col in numeric_cols:
@@ -40,18 +51,17 @@ def get_binance_ohlcv(symbol="BTCUSDT", interval="1h", limit=200):
     if df.empty:
         st.warning("داده‌های دریافت شده قابل پردازش نبودند.")
         return pd.DataFrame()
-
-    # Calculate volume direction
+        
+    # Recalculate indicators and volume direction on the new data
     df["volume_direction"] = df.apply(lambda row: row["volume"] if row["close"] >= row["open"] else -row["volume"], axis=1)
-    
-    # Calculate indicators
+
     if len(df) > 1:
         df["obv"] = OnBalanceVolumeIndicator(close=df["close"], volume=df["volume"]).on_balance_volume()
         df["mfi"] = money_flow_index(high=df["high"], low=df["low"], close=df["close"], volume=df["volume"])
     else:
         df["obv"] = pd.Series([0] * len(df))
         df["mfi"] = pd.Series([0] * len(df))
-
+        
     return df
 
 # ==============================
@@ -64,26 +74,26 @@ st.markdown("این داشبورد با استفاده از داده‌های ح
 
 # Sidebar controls
 st.sidebar.header("تنظیمات")
-interval = st.sidebar.selectbox("⏳ تایم‌فریم", ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"])
+interval = st.sidebar.selectbox("⏳ تایم‌فریم", ["1h", "4h", "1d"])
 limit = st.sidebar.slider("📅 تعداد کندل‌ها", 50, 500, 200)
 
 # Coin selection
 coins = {
-    "BTC": "BTCUSDT",
-    "ETH": "ETHUSDT",
-    "BNB": "BNBUSDT",
-    "XRP": "XRPUSDT",
-    "DOGE": "DOGEUSDT"
+    "BTC": "BTC",
+    "ETH": "ETH",
+    "BNB": "BNB",
+    "XRP": "XRP",
+    "DOGE": "DOGE"
 }
 selected_coin = st.sidebar.selectbox("💰 انتخاب کوین", list(coins.keys()))
 symbol = coins[selected_coin]
 
 # Get data
-df = get_binance_ohlcv(symbol, interval, limit)
+df = get_cryptocompare_ohlcv(symbol, "USDT", interval, limit)
 
 # Only display charts if DataFrame is not empty
 if not df.empty:
-    st.subheader(f"تحلیل نقدینگی {selected_coin} ({symbol}) - تایم‌فریم {interval}")
+    st.subheader(f"تحلیل نقدینگی {selected_coin} - تایم‌فریم {interval}")
 
     # Display charts
     fig_price = go.Figure(data=[go.Candlestick(
@@ -137,6 +147,6 @@ if not df.empty:
         st.info("داده کافی برای نمایش شاخص‌ها وجود ندارد.")
 
     st.markdown("---")
-    st.caption("منبع داده: Binance API (Real-time)")
+    st.caption("منبع داده: CryptoCompare API (Real-time)")
 else:
     st.info("در حال حاضر داده‌ای برای نمایش موجود نیست. لطفاً تنظیمات را بررسی کنید.")
